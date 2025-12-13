@@ -3,206 +3,93 @@ package elevator;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 
-public class Dispatcher implements Runnable
-{
+public class Dispatcher implements Serializable {
     private final List<Elevator> elevators;
-    private final BlockingQueue<Request> requests = new LinkedBlockingQueue<>();
-    private volatile boolean running = true;
+    private transient List<Thread> elevatorThreads;
 
-    public Dispatcher(List<Elevator> elevators)
-    {
-        this.elevators = elevators;
+    public Dispatcher(int elevatorsCount, int startFloor) {
+        elevators = new ArrayList<>();
+        elevatorThreads = new ArrayList<>();
+        for (int i = 0; i < elevatorsCount; i++) {
+            Elevator e = new Elevator(i, startFloor);
+            elevators.add(e);
+            Thread t = new Thread(e);
+            elevatorThreads.add(t);
+            t.start();
+        }
     }
 
-    public void submit(Request r)
-    {
-        System.out.println("New request: floor " + r.floor + ", direction " + r.direction + ", id " + r.id);
-        requests.offer(r);
+    public synchronized void requestElevator(int floor, Direction dir) {
+        System.out.println("New request: floor " + floor + ", direction " + dir);
+        Elevator best = findBestElevator(floor, dir);
+        best.addDestination(floor);
+        System.out.println("Dispatcher assigned elevator " + bestId(best) + " to request");
     }
 
-    public List<Request> snapshotPendingRequests()
-    {
-        return new ArrayList<>(requests);
-    }
-
-    public void clearPendingRequests()
-    {
-        requests.clear();
-    }
-
-    @Override
-    public void run()
-    {
-        try
-        {
-            while (running)
-            {
-                Request r;
-                try
-                {
-                    r = requests.take();
-                }
-                catch (InterruptedException ex)
-                {
-                    break;
-                }
-
-                Elevator chosen = null;
-
-                for (Elevator e : elevators)
-                {
-                    try
-                    {
-                        if (e.tryReserve(50))
-                        {
-                            chosen = e;
-                            break;
-                        }
-                    }
-                    catch (InterruptedException ex)
-                    {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-
-                if (chosen == null)
-                {
-                    int bestDist = Integer.MAX_VALUE;
-                    for (Elevator e : elevators)
-                    {
-                        int dist = Math.abs(e.getCurrentFloor() - r.floor);
-                        if (dist < bestDist)
-                        {
-                            chosen = e;
-                            bestDist = dist;
-                        }
-                    }
-                    if (chosen != null)
-                    {
-                        chosenLockAndAssign(chosen, r.floor);
-                    }
-                }
-                else
-                {
-                    try
-                    {
-                        chosen.addDestination(r.floor);
-                    }
-                    finally
-                    {
-                        chosen.releaseReserve();
-                    }
-                }
-
-                if (chosen != null)
-                {
-                    System.out.println("Dispatcher assigned elevator " + chosen.getId() + " to request " + r.id);
-                }
-                else
-                {
-                    System.out.println("Dispatcher failed to assign elevator to request " + r.id);
-                }
+    private Elevator findBestElevator(int floor, Direction dir) {
+        Elevator chosen = elevators.get(0);
+        int minDistance = Math.abs(chosen.getCurrentFloor() - floor);
+        for (Elevator e : elevators) {
+            int distance = Math.abs(e.getCurrentFloor() - floor);
+            if (distance < minDistance) {
+                minDistance = distance;
+                chosen = e;
             }
         }
-        finally
-        {
-            // nothing
+        return chosen;
+    }
+
+    private int bestId(Elevator e) {
+        return elevators.indexOf(e);
+    }
+
+    public synchronized void status() {
+        for (Elevator e : elevators) {
+            System.out.println("Elevator " + bestId(e) + " floor=" + e.getCurrentFloor() +
+                    " state=" + e.getDirection() + " queue=" + e.getQueueSize());
         }
     }
 
-    private void chosenLockAndAssign(Elevator e, int floor)
-    {
-        e.lock();
-        try
-        {
-            e.addDestination(floor);
+    public synchronized void stopAll() {
+        for (Elevator e : elevators) {
+            e.stopElevator();
         }
-        finally
-        {
-            e.releaseReserve();
+        for (Thread t : elevatorThreads) {
+            try {
+                t.join();
+            } catch (InterruptedException ignored) {}
         }
     }
 
-    public void stopDispatcher()
-    {
-        running = false;
-        Thread.currentThread().interrupt();
+    public synchronized void restoreElevators() {
+        elevatorThreads = new ArrayList<>();
+        for (Elevator e : elevators) {
+            e.restoreTransient();
+            Thread t = new Thread(e);
+            elevatorThreads.add(t);
+            t.start();
+        }
     }
 
-    public void saveStateToFile(String filename)
-    {
-        try (PrintWriter out = new PrintWriter(new FileWriter(filename)))
-        {
-            out.println(elevators.size());
-            for (Elevator e : elevators)
-            {
-                out.println(e.getId() + " " + e.getCurrentFloor() + " " + e.getDirection() + " " + e.getState());
-                List<Integer> q = e.snapshotInternalQueue();
-                out.print(q.size());
-                for (Integer x : q) out.print(" " + x);
-                out.println();
-            }
-            List<Request> pending = snapshotPendingRequests();
-            out.println(pending.size());
-            for (Request r : pending)
-            {
-                out.println(r.floor + " " + r.direction + " " + r.id + " " + r.timestamp + " " + r.passengers);
-            }
+    public void save(String filename) {
+        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(filename))) {
+            out.writeObject(this);
             System.out.println("Dispatcher: state saved to " + filename);
-        }
-        catch (IOException ex)
-        {
-            System.out.println("Dispatcher: error saving state");
+        } catch (IOException ex) {
+            System.out.println("Error saving state: " + ex.getMessage());
         }
     }
 
-    public void loadStateFromFile(String filename)
-    {
-        try (BufferedReader br = new BufferedReader(new FileReader(filename)))
-        {
-            String line = br.readLine();
-            int cnt = Integer.parseInt(line.trim());
-            for (int i = 0; i < cnt; i++)
-            {
-                line = br.readLine();
-                String[] p = line.split("\\s+");
-                int id = Integer.parseInt(p[0]);
-                int floor = Integer.parseInt(p[1]);
-                line = br.readLine();
-                String[] qparts = line.trim().split("\\s+");
-                int qsize = Integer.parseInt(qparts[0]);
-                Elevator target = elevators.get(id);
-                target.clearInternalQueue();
-                for (int j = 0; j < qsize; j++)
-                {
-                    int f = Integer.parseInt(qparts[1 + j]);
-                    target.addDestination(f);
-                }
-            }
-            line = br.readLine();
-            int pend = Integer.parseInt(line.trim());
-            clearPendingRequests();
-            for (int i = 0; i < pend; i++)
-            {
-                line = br.readLine();
-                String[] p = line.split("\\s+");
-                int floor = Integer.parseInt(p[0]);
-                Direction dir = Direction.valueOf(p[1]);
-                long id = Long.parseLong(p[2]);
-                long ts = Long.parseLong(p[3]);
-                int pass = Integer.parseInt(p[4]);
-                submit(new Request(floor, dir, id, ts, pass));
-            }
+    public static Dispatcher load(String filename) {
+        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(filename))) {
+            Dispatcher d = (Dispatcher) in.readObject();
+            d.restoreElevators();
             System.out.println("Dispatcher: state loaded from " + filename);
-        }
-        catch (IOException ex)
-        {
-            System.out.println("Dispatcher: error loading state");
+            return d;
+        } catch (IOException | ClassNotFoundException ex) {
+            System.out.println("Error loading state: " + ex.getMessage());
+            return null;
         }
     }
 }

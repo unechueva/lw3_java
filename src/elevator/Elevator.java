@@ -1,151 +1,84 @@
 package elevator;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
+import java.io.Serializable;
+import java.util.LinkedList;
+import java.util.Queue;
 
-public class Elevator implements Runnable
-{
+public class Elevator implements Runnable, Serializable {
     private final int id;
-    private volatile int currentFloor = 1;
-    private volatile Direction direction = Direction.IDLE;
-    private volatile ElevatorState state = ElevatorState.IDLE;
-    private final BlockingQueue<Integer> internalQueue = new LinkedBlockingQueue<>();
-    private final ReentrantLock lock = new ReentrantLock();
-    private volatile boolean running = true;
+    private int currentFloor;
+    private Direction direction;
+    private final Queue<Integer> destinations;
+    private transient boolean running;
 
-    public Elevator(int id)
-    {
+    public Elevator(int id, int startFloor) {
         this.id = id;
+        this.currentFloor = startFloor;
+        this.direction = Direction.IDLE;
+        this.destinations = new LinkedList<>();
+        this.running = true;
     }
 
-    public boolean tryReserve(long timeoutMs) throws InterruptedException
-    {
-        return lock.tryLock(timeoutMs, TimeUnit.MILLISECONDS);
+    public synchronized void addDestination(int floor) {
+        destinations.offer(floor);
+        notifyAll();
     }
 
-    public void lock()
-    {
-        lock.lock();
-    }
-
-    public void releaseReserve()
-    {
-        if (lock.isHeldByCurrentThread()) lock.unlock();
-    }
-
-    public void addDestination(int floor)
-    {
-        internalQueue.offer(floor);
-        System.out.println("Elevator " + id + " received new destination: " + floor);
-    }
-
-    public List<Integer> snapshotInternalQueue()
-    {
-        return new ArrayList<>(internalQueue);
-    }
-
-    public void clearInternalQueue()
-    {
-        internalQueue.clear();
-    }
-
-    public void stopElevator()
-    {
-        running = false;
-        Thread.currentThread().interrupt();
-    }
-
-    public int getId()
-    {
-        return id;
-    }
-
-    public int getCurrentFloor()
-    {
+    public synchronized int getCurrentFloor() {
         return currentFloor;
     }
 
-    public Direction getDirection()
-    {
+    public synchronized Direction getDirection() {
         return direction;
     }
 
-    public ElevatorState getState()
-    {
-        return state;
+    public synchronized int getQueueSize() {
+        return destinations.size();
     }
 
-    public String statusString()
-    {
-        return "Elevator " + id + " floor=" + currentFloor + " state=" + state + " dir=" + direction + " queue=" + internalQueue.size();
+    public synchronized void stopElevator() {
+        running = false;
+        notifyAll();
+    }
+
+    private void moveToFloor(int floor) throws InterruptedException {
+        while (currentFloor != floor) {
+            if (currentFloor < floor) {
+                currentFloor++;
+                direction = Direction.UP;
+            } else {
+                currentFloor--;
+                direction = Direction.DOWN;
+            }
+            System.out.println("Elevator " + id + " at floor " + currentFloor);
+            Thread.sleep(200);
+        }
+        System.out.println("Elevator " + id + " doors open");
+        Thread.sleep(200);
+        System.out.println("Elevator " + id + " doors closed");
+        direction = Direction.IDLE;
     }
 
     @Override
-    public void run()
-    {
-        try
-        {
-            while (running)
-            {
-                Integer next;
-                try
-                {
-                    next = internalQueue.take();
+    public void run() {
+        while (true) {
+            int nextFloor;
+            synchronized (this) {
+                while (destinations.isEmpty() && running) {
+                    try {
+                        wait();
+                    } catch (InterruptedException ignored) {}
                 }
-                catch (InterruptedException ex)
-                {
-                    break;
-                }
-                System.out.println("Elevator " + id + " moving to " + next);
-
-                if (next > currentFloor) direction = Direction.UP;
-                else if (next < currentFloor) direction = Direction.DOWN;
-                else direction = Direction.IDLE;
-
-                state = ElevatorState.MOVING;
-
-                while (currentFloor != next && running)
-                {
-                    try
-                    {
-                        Thread.sleep(400);
-                    }
-                    catch (InterruptedException ex)
-                    {
-                        running = false;
-                        break;
-                    }
-                    if (direction == Direction.UP) currentFloor++;
-                    else if (direction == Direction.DOWN) currentFloor--;
-                    System.out.println("Elevator " + id + " at floor " + currentFloor);
-                }
-
-                if (!running) break;
-
-                state = ElevatorState.DOORS_OPEN;
-                System.out.println("Elevator " + id + " doors open");
-                try
-                {
-                    Thread.sleep(500);
-                }
-                catch (InterruptedException ex)
-                {
-                    running = false;
-                    break;
-                }
-
-                state = ElevatorState.IDLE;
-                direction = Direction.IDLE;
-                System.out.println("Elevator " + id + " doors closed");
+                if (!running && destinations.isEmpty()) break;
+                nextFloor = destinations.poll();
             }
+            try {
+                moveToFloor(nextFloor);
+            } catch (InterruptedException ignored) {}
         }
-        finally
-        {
-            if (lock.isHeldByCurrentThread()) lock.unlock();
-        }
+    }
+
+    public synchronized void restoreTransient() {
+        running = true;
     }
 }

@@ -1,91 +1,72 @@
 package elevator;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Scanner;
 
-public class Main
-{
-    public static void main(String[] args)
-    {
+public class Main {
+    public static void main(String[] args) {
         Scanner sc = new Scanner(System.in);
+        int minFloor = 1, maxFloor = 10;
         int elevatorsCount = 3;
 
-        List<Elevator> elevators = new ArrayList<>();
-        List<Thread> threads = new ArrayList<>();
+        Dispatcher dispatcher = new Dispatcher(elevatorsCount, minFloor);
 
-        for (int i = 0; i < elevatorsCount; i++)
-        {
-            Elevator e = new Elevator(i);
-            elevators.add(e);
-            Thread t = new Thread(e);
-            threads.add(t);
-            t.start();
-        }
+        System.out.println("Симуляция лифтового управления");
+        System.out.println("Elevators count: " + elevatorsCount);
+        System.out.println("Available commands:");
+        System.out.println("<этаж> up        — вызвать лифт вверх");
+        System.out.println("<этаж> down      — вызвать лифт вниз");
+        System.out.println("status           — показать состояние лифтов");
+        System.out.println("save <файл>      — сохранить состояние");
+        System.out.println("load <файл>      — загрузить состояние");
+        System.out.println("exit             — завершить программу");
 
-        Dispatcher dispatcher = new Dispatcher(elevators);
-        Thread dispatcherThread = new Thread(dispatcher);
-        dispatcherThread.start();
-
-        long reqId = 1;
-
-        System.out.println("Commands: <floor> <up|down> | status | save <file> | load <file> | exit");
-
-        while (true)
-        {
-            String s = sc.nextLine();
-            if (s == null) break;
-            s = s.trim();
-            if (s.length() == 0) continue;
-            if (s.equalsIgnoreCase("exit"))
-            {
-                System.out.println("Shutting down...");
-                dispatcher.stopDispatcher();
-                dispatcherThread.interrupt();
-                for (Thread t : threads) t.interrupt();
-                for (int i = 0; i < threads.size(); i++)
-                {
-                    try
-                    {
-                        threads.get(i).join(500);
-                    }
-                    catch (InterruptedException ignored)
-                    {
-                    }
-                }
+        while (true) {
+            String line = sc.nextLine().trim();
+            if (line.equals("exit")) {
+                dispatcher.stopAll();
                 break;
-            }
-            else if (s.equalsIgnoreCase("status"))
-            {
-                for (Elevator e : elevators) System.out.println(e.statusString());
-                continue;
-            }
-            else if (s.startsWith("save "))
-            {
-                String[] p = s.split("\\s+", 2);
-                dispatcher.saveStateToFile(p[1]);
-                continue;
-            }
-            else if (s.startsWith("load "))
-            {
-                String[] p = s.split("\\s+", 2);
-                dispatcher.loadStateFromFile(p[1]);
-                continue;
-            }
-
-            try
-            {
-                String[] p = s.split(" ");
-                int floor = Integer.parseInt(p[0]);
-                Direction d = p[1].equalsIgnoreCase("up") ? Direction.UP : Direction.DOWN;
-                dispatcher.submit(new Request(floor, d, reqId++));
-            }
-            catch (Exception ex)
-            {
-                System.out.println("Invalid input. Use: <floor> <up|down> or commands listed.");
+            } else if (line.equals("status")) {
+                dispatcher.status();
+            } else if (line.startsWith("save ")) {
+                String[] parts = line.split("\\s+");
+                if (parts.length == 2) {
+                    dispatcher.save(parts[1]);
+                } else {
+                    System.out.println("Ошибка: некорректный формат команды save.");
+                }
+            } else if (line.startsWith("load ")) {
+                String[] parts = line.split("\\s+");
+                if (parts.length == 2) {
+                    Dispatcher loaded = Dispatcher.load(parts[1]);
+                    if (loaded != null) {
+                        dispatcher = loaded;
+                    }
+                } else {
+                    System.out.println("Ошибка: некорректный формат команды load.");
+                }
+            } else {
+                String[] parts = line.split("\\s+");
+                if (parts.length == 2) {
+                    try {
+                        int floor = Integer.parseInt(parts[0]);
+                        Direction dir;
+                        if (parts[1].equalsIgnoreCase("up")) {
+                            dir = Direction.UP;
+                        } else if (parts[1].equalsIgnoreCase("down")) {
+                            dir = Direction.DOWN;
+                        } else {
+                            System.out.println("Ошибка: неизвестное направление '" + parts[1] + "'. Используйте 'up' или 'down'.");
+                            continue;
+                        }
+                        dispatcher.requestElevator(floor, dir);
+                    } catch (NumberFormatException e) {
+                        System.out.println("Ошибка: некорректный этаж '" + parts[0] + "'. Введите число.");
+                    }
+                } else {
+                    System.out.println("Ошибка: неизвестная команда. Проверьте формат ввода.");
+                }
             }
         }
-
-        System.out.println("Application terminated");
+        System.out.println("Программа завершена.");
     }
 }
